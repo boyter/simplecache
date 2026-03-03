@@ -151,6 +151,7 @@ func (c *Cache[T]) evictLFU() {
 		count++
 		if v.hits < pHit {
 			pKey = k
+			pHit = v.hits
 		}
 
 		if count > c.evictionSamples {
