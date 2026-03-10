@@ -370,6 +370,137 @@ func TestSimpleCache_LRU(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestSimpleCache_GetWithStatus_Hit(t *testing.T) {
+	staleAge := 10 * time.Second
+	maxAge := 20 * time.Second
+	sc := New[string](Option{
+		StaleAge: &staleAge,
+		MaxAge:   &maxAge,
+	})
+
+	_ = sc.Set("key1", "value1")
+	result := sc.GetWithStatus("key1")
+	assert.Equal(t, CacheHit, result.Status)
+	assert.Equal(t, "value1", result.Value)
+}
+
+func TestSimpleCache_GetWithStatus_Stale(t *testing.T) {
+	staleAge := time.Nanosecond
+	maxAge := time.Hour
+	sc := New[string](Option{
+		StaleAge: &staleAge,
+		MaxAge:   &maxAge,
+	})
+
+	_ = sc.Set("key1", "value1")
+	time.Sleep(time.Millisecond)
+	result := sc.GetWithStatus("key1")
+	assert.Equal(t, CacheStale, result.Status)
+	assert.Equal(t, "value1", result.Value)
+}
+
+func TestSimpleCache_GetWithStatus_Miss_Expired(t *testing.T) {
+	staleAge := time.Nanosecond
+	maxAge := time.Nanosecond
+	sc := New[string](Option{
+		StaleAge: &staleAge,
+		MaxAge:   &maxAge,
+	})
+
+	_ = sc.Set("key1", "value1")
+	time.Sleep(time.Millisecond)
+	result := sc.GetWithStatus("key1")
+	assert.Equal(t, CacheMiss, result.Status)
+	assert.Equal(t, "", result.Value)
+	assert.Equal(t, 0, sc.Sum())
+}
+
+func TestSimpleCache_GetWithStatus_Miss_NotFound(t *testing.T) {
+	sc := New[string]()
+	result := sc.GetWithStatus("nonexistent")
+	assert.Equal(t, CacheMiss, result.Status)
+	assert.Equal(t, "", result.Value)
+}
+
+func TestSimpleCache_GetWithStatus_NoStaleAge(t *testing.T) {
+	sc := New[string]()
+
+	_ = sc.Set("key1", "value1")
+	result := sc.GetWithStatus("key1")
+	assert.Equal(t, CacheHit, result.Status)
+	assert.Equal(t, "value1", result.Value)
+}
+
+func TestSimpleCache_GetWithStatus_GetUnchanged(t *testing.T) {
+	staleAge := time.Nanosecond
+	maxAge := time.Hour
+	sc := New[string](Option{
+		StaleAge: &staleAge,
+		MaxAge:   &maxAge,
+	})
+
+	_ = sc.Set("key1", "value1")
+	time.Sleep(time.Millisecond)
+
+	// Get should still work as before (returns value, true) regardless of staleAge
+	val, ok := sc.Get("key1")
+	assert.True(t, ok)
+	assert.Equal(t, "value1", val)
+}
+
+func TestSimpleCache_Peek_Hit(t *testing.T) {
+	staleAge := 10 * time.Second
+	maxAge := 20 * time.Second
+	sc := New[string](Option{
+		StaleAge: &staleAge,
+		MaxAge:   &maxAge,
+	})
+
+	_ = sc.Set("key1", "value1")
+	result := sc.Peek("key1")
+	assert.Equal(t, CacheHit, result.Status)
+	assert.Equal(t, "value1", result.Value)
+}
+
+func TestSimpleCache_Peek_Stale(t *testing.T) {
+	staleAge := time.Nanosecond
+	maxAge := time.Hour
+	sc := New[string](Option{
+		StaleAge: &staleAge,
+		MaxAge:   &maxAge,
+	})
+
+	_ = sc.Set("key1", "value1")
+	time.Sleep(time.Millisecond)
+	result := sc.Peek("key1")
+	assert.Equal(t, CacheStale, result.Status)
+	assert.Equal(t, "value1", result.Value)
+}
+
+func TestSimpleCache_Peek_Expired_NotDeleted(t *testing.T) {
+	staleAge := time.Nanosecond
+	maxAge := time.Nanosecond
+	sc := New[string](Option{
+		StaleAge: &staleAge,
+		MaxAge:   &maxAge,
+	})
+
+	_ = sc.Set("key1", "value1")
+	time.Sleep(time.Millisecond)
+	result := sc.Peek("key1")
+	// Peek returns CacheStale (not CacheMiss) and does NOT delete
+	assert.Equal(t, CacheStale, result.Status)
+	assert.Equal(t, "value1", result.Value)
+	assert.Equal(t, 1, sc.Sum(), "Peek must not evict entries")
+}
+
+func TestSimpleCache_Peek_Miss_NotFound(t *testing.T) {
+	sc := New[string]()
+	result := sc.Peek("nonexistent")
+	assert.Equal(t, CacheMiss, result.Status)
+	assert.Equal(t, "", result.Value)
+}
+
 func TestSimpleCache_NoExpiration(t *testing.T) {
 	minusExpire := -time.Hour
 	ep := LRU
