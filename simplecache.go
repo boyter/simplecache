@@ -22,7 +22,7 @@ var ErrInvalidEvictionPolicy = errors.New("invalid eviction policy")
 type CacheStatus int
 
 const (
-	CacheMiss  CacheStatus = iota
+	CacheMiss CacheStatus = iota
 	CacheHit
 	CacheStale
 )
@@ -122,7 +122,9 @@ func (c *Cache[T]) Set(key string, value T) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if c.maxItems > 0 && len(c.items) >= c.maxItems {
+	entry, exists := c.items[key]
+
+	if !exists && c.maxItems > 0 && len(c.items) >= c.maxItems {
 		// now we need to expire things based on our settings
 		switch c.evictionPolicy {
 		case LRU:
@@ -134,12 +136,24 @@ func (c *Cache[T]) Set(key string, value T) error {
 		}
 	}
 
-	c.items[key] = cacheEntry[T]{
-		entry:   value,
-		hits:    0,
-		age:     time.Now(),
-		lastUse: time.Now(),
+	now := time.Now()
+	if exists {
+		// update in place: preserve the hit count, but a refreshed value is
+		// fresh again, so reset age (and lastUse) to now. Keeping the original
+		// age would make every refresh inherit the old value's age, breaking
+		// stale-while-revalidate.
+		entry.entry = value
+		entry.age = now
+		entry.lastUse = now
+	} else {
+		entry = cacheEntry[T]{
+			entry:   value,
+			hits:    0,
+			age:     now,
+			lastUse: now,
+		}
 	}
+	c.items[key] = entry
 
 	return nil
 }
@@ -149,13 +163,18 @@ func (c *Cache[T]) Set(key string, value T) error {
 func (c *Cache[T]) evictLRU() {
 	count := 0
 	pKey := ""
-	oldest := time.Now()
+	oldest := time.Time{}
+	found := false // "" is a valid key, so a sentinel on pKey would misfire for empty keys
 
 	for k, v := range c.items { // iterating over a map is random in Go
 		count++
-		if v.age.Before(oldest) {
-			oldest = v.age
+		// !found picks the first sampled entry unconditionally, which also
+		// guarantees an eviction even on a low-resolution clock where
+		// lastUse could be equal to (or later than) time.Now()
+		if !found || v.lastUse.Before(oldest) {
+			oldest = v.lastUse
 			pKey = k
+			found = true
 		}
 
 		if count >= c.evictionSamples {
@@ -180,7 +199,7 @@ func (c *Cache[T]) evictLFU() {
 			pHit = v.hits
 		}
 
-		if count > c.evictionSamples {
+		if count >= c.evictionSamples {
 			break
 		}
 	}
@@ -195,7 +214,7 @@ func (c *Cache[T]) Get(key string) (T, bool) {
 	entry, found := c.items[key]
 	if found {
 		if c.maxAge > 0 { // should it be expired?
-			if entry.lastUse.Before(time.Now().Add(-c.maxAge)) {
+			if time.Since(entry.age) > c.maxAge {
 				delete(c.items, key)
 				var zero T
 				return zero, false
@@ -214,7 +233,8 @@ func (c *Cache[T]) Get(key string) (T, bool) {
 
 // GetWithStatus retrieves an item from the cache by key, returning a CacheResult
 // that includes the value and its freshness status (CacheMiss, CacheHit, or CacheStale).
-// Unlike Get, staleness is checked against the entry's creation time (age), not lastUse.
+// Like Get and Peek, MaxAge expiry and StaleAge staleness are both checked
+// against the entry's creation time (age).
 func (c *Cache[T]) GetWithStatus(key string) CacheResult[T] {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()

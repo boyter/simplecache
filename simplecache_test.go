@@ -348,26 +348,36 @@ func TestSimpleCache_Clear(t *testing.T) {
 func TestSimpleCache_LRU(t *testing.T) {
 	ep := LRU
 	mi := 5
+	es := 100
 	sc := New[int](Option{
-		MaxItems:       &mi,
-		EvictionPolicy: &ep,
+		MaxItems:        &mi,
+		EvictionPolicy:  &ep,
+		EvictionSamples: &es,
 	})
 
 	for i := 0; i < 5; i++ {
 		_ = sc.Set(fmt.Sprintf("key-%d", i), i)
 	}
 
+	// Re-insert keys 0-3 many times so key-4 is the least recently used.
 	for j := 0; j < 50; j++ {
 		for i := 0; i < 4; i++ {
 			_ = sc.Set(fmt.Sprintf("key-%d", i), i)
 		}
 	}
 
-	_ = sc.Set(fmt.Sprintf("key-%d", 6), 6)
+	_ = sc.Set(fmt.Sprintf("key-%d", 6), 6) // cache full -> evict the least recently used entry
 
-	_, ok := sc.Get(fmt.Sprintf("key-%d", 5))
+	_, ok := sc.Get(fmt.Sprintf("key-%d", 4))
+	assert.False(t, ok, "key-4 was untouched since creation and must be evicted first")
 
-	assert.False(t, ok)
+	for i := 0; i < 4; i++ {
+		v, ok := sc.Get(fmt.Sprintf("key-%d", i))
+		assert.True(t, ok)
+		assert.Equal(t, i, v)
+	}
+
+	assert.Equal(t, 5, sc.Sum())
 }
 
 func TestSimpleCache_GetWithStatus_Hit(t *testing.T) {
